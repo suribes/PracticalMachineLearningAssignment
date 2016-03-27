@@ -1,7 +1,7 @@
 ---
 title: "Prediction Assignment Writeup"
 author: "Sergio Uribe"
-date: "23 mars 2016"
+date: "27 mars 2016"
 output: html_document
 ---
 
@@ -9,22 +9,197 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+# Synopsis
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants shall be used to predict the manner in which they did the exercise (). 
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). This is the "classe" variable in the training set.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Read more at: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises
 
-```{r cars}
-summary(cars)
+Weight Lifting Exercises Paper: 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+The questions to be asked are:
+1. How well do the machine learning models predict (classify) the activities?
+
+# 1. Load and clean the data
+
+## Load the libraries
+```{r, warning = FALSE, results = 'hide', message = FALSE}
+library(caret)
+library(randomForest)
+library(FSelector)
+library(plyr)
+datawd <- getwd()
 ```
 
-## Including Plots
+## 1.1 Load the data
 
-You can also embed plots, for example:
+Import training and testing data to variables pmlTraining and pmlTesting.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+# Getting and Cleaning data
+
+if (!file.exists("pml-training.csv")) {
+    fileUrl1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    destFile1 <- "./pml-training.csv"
+    
+    # Download files
+    download.file(fileUrl1, destfile = destFile1)
+}
+
+if (!file.exists("pml-testing.csv")) {
+    fileUrl2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    destFile2 <- "./pml-testing.csv"
+    
+    # Download files
+    download.file(fileUrl2, destfile = destFile2)
+}
+
+# Import csv data and replace c("#DIV/0!"," ", "NA") with NA values
+pmlTraining = read.csv("pml-training.csv", na.strings=c("#DIV/0!"," ", "NA"))
+pmlTesting = read.csv("pml-testing.csv", na.strings=c("#DIV/0!"," ", "NA"))
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## 1.2 Clean the data
+
+Removing user and activity information
+
+```{r}
+# Reference dimensions
+dim(pmlTraining)
+dim(pmlTesting)
+
+pmlTraining <- pmlTraining[, -c(1:7)]
+pmlTesting <- pmlTesting[, -c(1:7)]
+
+# Verify new dimensions
+dim(pmlTraining)
+dim(pmlTesting)
+```
+
+Remove columns with near zero variance values
+
+```{r}
+nsvColumns <- nearZeroVar(pmlTraining)
+
+pmlTraining <- pmlTraining[, -nsvColumns]
+pmlTesting <- pmlTesting[, -nsvColumns]
+
+# Verify dimensions
+dim(pmlTraining)
+dim(pmlTesting)
+```
+
+Remove columns with na values
+
+```{r}
+naColumns <- sapply(pmlTraining, function(x) any(is.na(x)))
+
+pmlTraining <- pmlTraining[, !naColumns]
+pmlTesting <- pmlTesting[, !naColumns]
+
+# Verify dimensions
+dim(pmlTraining)
+dim(pmlTesting)
+```
+
+The training set shall be divided in training and validation for cross-validation purposes.
+
+```{r}
+set.seed(232)
+inTrain <- createDataPartition(y = pmlTraining$classe, p = 0.6, list = FALSE)
+training <- pmlTraining[inTrain, ]
+validating <- pmlTraining[-inTrain, ]
+testing <- pmlTesting
+
+```
+
+
+# 2. Model Training
+
+## 2.1 Model Selection
+
+The model shall classify the manner in which the participants did the exercise. The family selected for classification is a desicion tree, because all the technical steps in the exercise are important and not only the final result.
+
+The learning model selected is a Random Forest due to its ability to correct for overfitting.
+
+We are going to use two different strategies for selecting features:
+    
+### 2.1.1 Select all the features
+
+```{r}
+# Train and Save the model if it does not exist
+if (!file.exists("modelrf.rds")) {
+    tControl <- trainControl(method = "cv", number = 5)
+    modelrf <- train(classe ~ ., data = training, method = "rf", trControl = tControl, verbose = FALSE)
+
+    saveRDS(modelrf, paste(datawd, "/modelrf.rds", sep = ""))
+}
+
+# Load the model
+modelrf <- readRDS(paste(datawd, "/modelrf.rds", sep = ""))
+
+```
+
+### 2.1.2 Select the 5 best features using the FSelector package
+
+```{r}
+# Train and Save the model if it does not exist
+if (!file.exists("modelrfWeights.rds")) {
+    weights <- random.forest.importance(classe ~., training, importance.type = 1)
+    print(weights)
+    subset <- cutoff.k(weights, 5)
+    modelFormula <- as.simple.formula(subset, "classe")
+    modelFormula
+
+    tControl <- trainControl(method = "cv", number = 5)
+    modelrfWeights <- train(form = modelFormula, data = training, method = "rf", trControl = tControl, verbose = FALSE)
+
+    saveRDS(modelrf, paste(datawd, "/modelrfWeights.rds", sep = ""))
+}
+
+# Load the model
+modelrfWeights <- readRDS(paste(datawd, "/modelrfWeights.rds", sep = ""))
+
+```
+
+# 3. Model Cross-Validation
+
+## 3.1 How well do the machine learning models predict the activities with the validation set?
+
+The two models shall use the validation set and produce and accuracy read.
+
+```{r}
+resultrf <- predict(modelrf, validating)
+resultrfWeights <- predict(modelrfWeights, validating)
+
+confusionMatrix(validating$classe, resultrf)$overall['Accuracy']
+confusionMatrix(validating$classe, resultrfWeights)$overall['Accuracy']
+
+```
+
+The model with all the features had better accuracy (0.997) than the top 5 model (0.984)
+
+## 3.2 How well do the machine learning models predict the activities with the testing set?
+
+The two models shall use the testing set for classification.
+
+```{r}
+resulttestrf <- predict(modelrf, testing)
+resulttestrfWeights <- predict(modelrfWeights, testing)
+
+resulttestrf
+resulttestrfWeights
+
+```
+
+The two models produced similar results with the testing set 20/20.
+
+# 4. Conclusions
+
+## 4.1 How well do the machine learning models predict the activities?
+
+* The model with all the features had better accuracy (0.997) than the top 5 model (0.984)
+* The two models produced similar results with the testing set 20/20, but in order to minimize generalization error the "Top 5 model" shall be used in production.
